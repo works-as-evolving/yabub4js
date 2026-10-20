@@ -86,48 +86,103 @@ TZ=Z printf -v _build '%(%G%V%u)T.%d' -1 $(( EPOCHSECONDS % 86400))
 _sha1sum='da39a3ee5e6b4b0d3255bfef95601890afd80709'
 declare -A _feeds
 
-function normalize_imports {
+function main() { { :x:off; } 2>&-
+  { :x:on; } 2>&-; parse_command_line "${@}"
+
+  log . "srcdir:     ${srcdir}"
+  log . "entrypoint: ${entrypoint}"
+  log . "outfile:    ${outfile}"
+
+  main_module=${entrypoint#"${srcdir}/"}
+  _feeds[:all]="${main_module}"
+  _feeds[${main_module}]=1
+
+  { pushd "${entrypoint%/*}"; } > /dev/null
+  resolve_imports "./${entrypoint##*/}"
+  { popd; } > /dev/null
+
+  log - < <( print_imports )
+
+  { pushd "${srcdir}"; } > /dev/null
+
+  real_outfile="${outfile}"
+  if [[ ${outfile} != /dev/stdout ]]; then
+    outfile="${outfile%/*}/.${outfile##*/}~"
+  fi
+
+  {
+    [[ -n ${_head} ]] && feed_head "${_head}"
+
+    print_imports
+
+    for feed in ${_feeds[:early]}; do
+      (( ${_feeds[${feed}]:-0} )) || continue
+      _feeds[${feed}]=0
+      feed_module "${feed}"
+    done
+
+    for feed in ${_feeds[:all]}; do
+      (( ${_feeds[${feed}]:-0} )) || continue
+      _feeds[${feed}]=0
+      feed_module "${feed}"
+    done
+  } > "${outfile}"
+
+  if [[ ${real_outfile} != "${outfile}" ]]; then
+    if [[ -n ${_foot} ]]; then
+      read -r _sha1sum _ < <( sed -E 's/\r$//' < "${outfile}" | sha1sum.exe )
+      feed_foot "${_foot}" >> "${outfile}"
+    fi
+    mv "${outfile}" "${real_outfile}"
+  fi
+
+  { popd; } > /dev/null
+}
+
+function feed_head() {
+  file="${1}"
+  sed -E '
+    /\/\*\*/,/\*\//{
+      s/\{:VERSION:\}/'"${_version}"'/
+      s/\{:BUILD:\}/'"${_build}"'/
+      s/\{:DATE:\}/'"${_date}"'/
+      s/\{:COMMIT:\}/da39a3ee5e6b4b0d3255bfef95601890afd80709/
+    }
+  ' "${file}"
+}
+
+function feed_foot() {
+  file="${1}"
+  sed -E '
+    /\/\*\*/,/\*\//{
+      s/\{:SHA1SUM:\}/'"${_sha1sum}"'/
+    }
+  ' "${file}"
+}
+
+function feed_module() {
+  module="${1}"
+  log ".%Feed file %s" "${module@Q}"
+  echo
+  echo "/** @feed ${module} */"
   sed -nE '
-    /^import/,/from[[:space:]]*["'"'"'][^"'"'"']*["'"'"']/{
-      # surround strings with spaces and convert double to single quotes
-      s/"([^"]*)"|'"'"'([^'"'"']*)'"'"'/ '"'"'\1\2'"'"' /g
-      # split multi-statement lines
-      s/'${SEMICOLON}'[[:space:]]*/'${SEMICOLON}'\n/g
-      p
-    }
-  ' | tee | sed -nE '
-    /^import[[:space:]]*\*[[:space:]]*as[[:space:]]{1,}[^[:space:]]{1,}[[:space:]]{1,}from[[:space:]]{1,}([^'${SEMICOLON}']{3,})'${SEMICOLON}'?[[:space:]]*$/{
-      ### s/^[[:space:]]*import[[:space:]]*/\/* namespace *\/ import /
-      s/t[[:space:]]*\*[[:space:]]*a/t * a/
-      s/[[:space:]](as|from)[[:space:]]/'${SEMICOLON}'\1'${SEMICOLON}'/g
-      #s/$/'${SEMICOLON}'/
-      p
-    }
-    /^import[[:space:]]*\{[[:space:]]*[^'${SEMICOLON}'}]*[[:space:]]*\}[[:space:]]*from[[:space:]]*[^'${SEMICOLON}']*'${SEMICOLON}'?[[:space:]]*$/{
-      ### s/^[[:space:]]*import[[:space:]]*/\/* single-line-named *\/ import /
-      s/\{/{\n/
-      s/,/,\n/g
-      s/\}/,\n}/
-      s/[[:space:]]{1,}as[[:space:]]{1,}/'${SEMICOLON}'as'${SEMICOLON}'/g # escape spaces around as
-      s/\}[[:space:]]*from[[:space:]]{1,}/}'${SEMICOLON}'from'${SEMICOLON}'/ # escape spaces around from
-      s/$/'${SEMICOLON}'/
-      p
-    }
-    /^import[[:space:]]*\{[^\}]*$/,/^[^{]*\}[[:space:]]*from[[:space:]]*[^'${SEMICOLON}']*'${SEMICOLON}'?[[:space:]]*$/{
-      ### s/^[[:space:]]*import[[:space:]]*/\/* multi-line-named *\/ import /
-      /\/\//d # delete line-comments
-      s/[[:space:]]{1,}as[[:space:]]{1,}/'${SEMICOLON}'as'${SEMICOLON}'/g # escape spaces around as
-      s/(from[^{}]*)$/\1'${SEMICOLON}'/ # append semicolon
-      s/\}[[:space:]]*from[[:space:]]{1,}/}'${SEMICOLON}'from'${SEMICOLON}'/ # escape spaces around from
-      p
-    }
-  ' | tr -d '[:space:]' | tee | sed -nE '
-    s/(^|'${SEMICOLON}')(\/\*[^*]*\*\/)?(import)/\1\2\3 /g
-    s/'${SEMICOLON}'(as|from)'${SEMICOLON}'/ \1 /g # restore spaces
-    s/\{/{ /g; s/,*\}/ }/g; s/,/, /g # insert spaces
-    s/'${SEMICOLON}'{1,}/'${SEMICOLON}'\n/g # separate statements
-    p
-  ' | tee
+    /\/\*\*/,/\*\//{p}
+    /\*\//{q0}
+  ' "${module}"
+  while read -r; do
+    echo "// ${REPLY}"
+  done < <( normalize_imports < "${module}" )
+  import_end=0
+  while read -r; do
+    [[ -n ${REPLY} ]] || continue
+    import_end=${REPLY%%:*}
+  done < <(
+    grep -nE '^[^*/"'"'"';]*[[:space:]]{1,}from[[:space:]]' "${module}" \
+    || grep -nE '^[[:space:]]*import[[:space:]]{1,}\*[[:space:]]' "${module}" \
+    || grep -m1 -nE '^[[:space:]]*\*/[[:space:]]*$' "${module}"
+  )
+  # shellcheck disable=SC2016 # it's not an expression, it's a sed command
+  sed -nE $(( import_end + 1 ))',${p}' "${module}"
 }
 
 function process_directives() {
@@ -296,6 +351,50 @@ function resolve_imports() {
   log '<Done'
 }
 
+function normalize_imports {
+  sed -nE '
+    /^import/,/from[[:space:]]*["'"'"'][^"'"'"']*["'"'"']/{
+      # surround strings with spaces and convert double to single quotes
+      s/"([^"]*)"|'"'"'([^'"'"']*)'"'"'/ '"'"'\1\2'"'"' /g
+      # split multi-statement lines
+      s/'${SEMICOLON}'[[:space:]]*/'${SEMICOLON}'\n/g
+      p
+    }
+  ' | tee | sed -nE '
+    /^import[[:space:]]*\*[[:space:]]*as[[:space:]]{1,}[^[:space:]]{1,}[[:space:]]{1,}from[[:space:]]{1,}([^'${SEMICOLON}']{3,})'${SEMICOLON}'?[[:space:]]*$/{
+      ### s/^[[:space:]]*import[[:space:]]*/\/* namespace *\/ import /
+      s/t[[:space:]]*\*[[:space:]]*a/t * a/
+      s/[[:space:]](as|from)[[:space:]]/'${SEMICOLON}'\1'${SEMICOLON}'/g
+      #s/$/'${SEMICOLON}'/
+      p
+    }
+    /^import[[:space:]]*\{[[:space:]]*[^'${SEMICOLON}'}]*[[:space:]]*\}[[:space:]]*from[[:space:]]*[^'${SEMICOLON}']*'${SEMICOLON}'?[[:space:]]*$/{
+      ### s/^[[:space:]]*import[[:space:]]*/\/* single-line-named *\/ import /
+      s/\{/{\n/
+      s/,/,\n/g
+      s/\}/,\n}/
+      s/[[:space:]]{1,}as[[:space:]]{1,}/'${SEMICOLON}'as'${SEMICOLON}'/g # escape spaces around as
+      s/\}[[:space:]]*from[[:space:]]{1,}/}'${SEMICOLON}'from'${SEMICOLON}'/ # escape spaces around from
+      s/$/'${SEMICOLON}'/
+      p
+    }
+    /^import[[:space:]]*\{[^\}]*$/,/^[^{]*\}[[:space:]]*from[[:space:]]*[^'${SEMICOLON}']*'${SEMICOLON}'?[[:space:]]*$/{
+      ### s/^[[:space:]]*import[[:space:]]*/\/* multi-line-named *\/ import /
+      /\/\//d # delete line-comments
+      s/[[:space:]]{1,}as[[:space:]]{1,}/'${SEMICOLON}'as'${SEMICOLON}'/g # escape spaces around as
+      s/(from[^{}]*)$/\1'${SEMICOLON}'/ # append semicolon
+      s/\}[[:space:]]*from[[:space:]]{1,}/}'${SEMICOLON}'from'${SEMICOLON}'/ # escape spaces around from
+      p
+    }
+  ' | tr -d '[:space:]' | tee | sed -nE '
+    s/(^|'${SEMICOLON}')(\/\*[^*]*\*\/)?(import)/\1\2\3 /g
+    s/'${SEMICOLON}'(as|from)'${SEMICOLON}'/ \1 /g # restore spaces
+    s/\{/{ /g; s/,*\}/ }/g; s/,/, /g # insert spaces
+    s/'${SEMICOLON}'{1,}/'${SEMICOLON}'\n/g # separate statements
+    p
+  ' | tee
+}
+
 function print_imports() {
   newblock=0
   modules="${!node_namespace_imports[*]}"
@@ -337,141 +436,6 @@ function print_imports() {
     symbols2=${symbols2//${SEMICOLON}as${SEMICOLON}/ as }
     echo "// import { ${symbols2:2} } from '${module}';"
   done <<<"$( IFS=$'\n' sort <<<"${modules// /$'\n'}" )"
-}
-
-function feed_head() {
-  file="${1}"
-  sed -E '
-    /\/\*\*/,/\*\//{
-      s/\{:VERSION:\}/'"${_version}"'/
-      s/\{:BUILD:\}/'"${_build}"'/
-      s/\{:DATE:\}/'"${_date}"'/
-      s/\{:COMMIT:\}/da39a3ee5e6b4b0d3255bfef95601890afd80709/
-    }
-  ' "${file}"
-}
-
-function feed_foot() {
-  file="${1}"
-  sed -E '
-    /\/\*\*/,/\*\//{
-      s/\{:SHA1SUM:\}/'"${_sha1sum}"'/
-    }
-  ' "${file}"
-}
-
-function feed_module() {
-  module="${1}"
-  log ".%Feed file %s" "${module@Q}"
-  echo
-  echo "/** @feed ${module} */"
-  sed -nE '
-    /\/\*\*/,/\*\//{p}
-    /\*\//{q0}
-  ' "${module}"
-  while read -r; do
-    echo "// ${REPLY}"
-  done < <( normalize_imports < "${module}" )
-  import_end=0
-  while read -r; do
-    [[ -n ${REPLY} ]] || continue
-    import_end=${REPLY%%:*}
-  done < <(
-    grep -nE '^[^*/"'"'"';]*[[:space:]]{1,}from[[:space:]]' "${module}" \
-    || grep -nE '^[[:space:]]*import[[:space:]]{1,}\*[[:space:]]' "${module}" \
-    || grep -m1 -nE '^[[:space:]]*\*/[[:space:]]*$' "${module}"
-  )
-  # shellcheck disable=SC2016 # it's not an expression, it's a sed command
-  sed -nE $(( import_end + 1 ))',${p}' "${module}"
-}
-
-# Entry point
-function main() { { :x:off; } 2>&-
-  { :x:on; } 2>&-; parse_command_line "${@}"
-
-  log . "srcdir:     ${srcdir}"
-  log . "entrypoint: ${entrypoint}"
-  log . "outfile:    ${outfile}"
-
-  main_module=${entrypoint#"${srcdir}/"}
-  _feeds[:all]="${main_module}"
-  _feeds[${main_module}]=1
-
-  { pushd "${entrypoint%/*}"; } > /dev/null
-  resolve_imports "./${entrypoint##*/}"
-  { popd; } > /dev/null
-
-  log - < <( print_imports )
-
-  { pushd "${srcdir}"; } > /dev/null
-
-  real_outfile="${outfile}"
-  if [[ ${outfile} != /dev/stdout ]]; then
-    outfile="${outfile%/*}/.${outfile##*/}~"
-  fi
-
-  {
-    [[ -n ${_head} ]] && feed_head "${_head}"
-
-    print_imports
-
-    for feed in ${_feeds[:early]}; do
-      (( ${_feeds[${feed}]:-0} )) || continue
-      _feeds[${feed}]=0
-      feed_module "${feed}"
-    done
-
-    for feed in ${_feeds[:all]}; do
-      (( ${_feeds[${feed}]:-0} )) || continue
-      _feeds[${feed}]=0
-      feed_module "${feed}"
-    done
-  } > "${outfile}"
-
-  if [[ ${real_outfile} != "${outfile}" ]]; then
-    if [[ -n ${_foot} ]]; then
-      read -r _sha1sum _ < <( sed -E 's/\r$//' < "${outfile}" | sha1sum.exe )
-      feed_foot "${_foot}" >> "${outfile}"
-    fi
-    mv "${outfile}" "${real_outfile}"
-  fi
-
-  { popd; } > /dev/null
-}
-
-# Returns word or words depending on count.
-#
-# Usage:
-#   pluralize file 1          -> file
-#   pluralize file 2          -> files
-#   pluralize person 2 people -> people
-function pluralize() {
-  if (( ${2} == 1 )); then
-    echo "${1}"
-  else
-    echo "${3:-${1}s}"
-  fi
-}
-
-# Joins tokens using separate delimiters for intermediate and final items.
-#
-# Usage:
-#   join_tokens ', ' ' and ' a            -> a
-#   join_tokens ', ' ' and ' a b          -> a and b
-#   join_tokens ', ' ' and ' a b c        -> a, b and c
-#   join_tokens ', ' ', and ' a b c d     -> a, b, c, and d
-#
-# Parameters:
-#   $1  Separator between all but the last two tokens.
-#   $2  Separator between the last two tokens.
-#   $@  Tokens to join.
-function join_tokens() {
-  local sep="${1}"; shift
-  local last="${1}"; shift
-  (( $# == 0 )) && printf '' && return
-  (( $# == 1 )) && printf '%s' "${@:1}" && return
-  (( $# > 2 )) && printf "%s${sep}" "${@:1:(($#-2))}"
-  printf "%s${last}%s\n" "${@:(($#-1))}"
 }
 
 function parse_command_line() { { :x:off; } 2>&-;
@@ -526,6 +490,41 @@ function parse_command_line() { { :x:off; } 2>&-;
   [[ ${outfile} != ${srcdir}/* || ${outfile} == /dev/stdout ]] || panic 1 'Output file is inside source directory "%s"' "${srcdir}"
 }
 
+
+# Returns word or words depending on count.
+#
+# Usage:
+#   pluralize file 1          -> file
+#   pluralize file 2          -> files
+#   pluralize person 2 people -> people
+function pluralize() {
+  if (( ${2} == 1 )); then
+    echo "${1}"
+  else
+    echo "${3:-${1}s}"
+  fi
+}
+
+# Joins tokens using separate delimiters for intermediate and final items.
+#
+# Usage:
+#   join_tokens ', ' ' and ' a            -> a
+#   join_tokens ', ' ' and ' a b          -> a and b
+#   join_tokens ', ' ' and ' a b c        -> a, b and c
+#   join_tokens ', ' ', and ' a b c d     -> a, b, c, and d
+#
+# Parameters:
+#   $1  Separator between all but the last two tokens.
+#   $2  Separator between the last two tokens.
+#   $@  Tokens to join.
+function join_tokens() {
+  local sep="${1}"; shift
+  local last="${1}"; shift
+  (( $# == 0 )) && printf '' && return
+  (( $# == 1 )) && printf '%s' "${@:1}" && return
+  (( $# > 2 )) && printf "%s${sep}" "${@:1:(($#-2))}"
+  printf "%s${last}%s\n" "${@:(($#-1))}"
+}
 ##### panic() #####
 # Exit the program. The first argument is used as the exit code.
 # Remaining arguments, if any, are passed to log().
