@@ -65,6 +65,10 @@
 
 set -euo pipefail
 
+: "${YABUB4JS_LOG_TAG:=yabub4js}"
+
+trap "code=\$?; log '^%Exiting with code %d' \${code}; exit \${code}" EXIT
+
 declare -A node_named_imports
 declare -A node_namespace_imports
 declare -A local_named_imports
@@ -128,21 +132,18 @@ function normalize_imports {
 
 function process_directives() {
   ret=0
-  # log '### HANDLE_DIRECTIVES pwd:%s key:%s module:%s' "${PWD@Q}" "${key@Q}" "${module@Q}"
-  log 'Process %d %s: %s' ${#directives[@]} "$( pluralize 'directive' ${#directives[@]} )" "$( join_tokens ', ' ' and ' "${directives[@]@Q}" )"
+  log '.%Process %d %s: %s' ${#directives[@]} "$( pluralize 'directive' ${#directives[@]} )" "$( join_tokens ', ' ' and ' "${directives[@]@Q}" )"
   for directive in "${directives[@]}"; do
     case "${directive}" in
       head|foot) {
         ret=1
         name=_${directive}
-        [[ -z "${!name}" ]] || { log 'Ignore repeated %s directive' "${directive@Q}"; continue; }
-        # log_inc '>>>'
+        [[ -z "${!name}" ]] || { log '.%Ignore repeated %s directive' "${directive@Q}"; continue; }
         declare -g "${name}"="$( realpath -e --relative-to "${srcdir}" "${module##*/}" )"
-        # log_dec '<<<'
-        log 'Using %s from %s' "${directive@Q}" "${!name@Q}"
+        log '.%Using %s from %s' "${directive@Q}" "${!name@Q}"
       };;
       early) {
-        log 'Add module %s to early feeds' "${module@Q}"
+        log '.%Add module %s to early feeds' "${module@Q}"
         _feeds[:early]+=" ${module}"
         :
       };;
@@ -155,7 +156,7 @@ function process_directives() {
           directive=${directive%%=*}
         fi
         name=_${directive}
-        [[ -z "${!name}" ]] || { log 'Ignore repeated %s directive' "${directive@Q}"; continue; }
+        [[ -z "${!name}" ]] || { log '.%Ignore repeated %s directive' "${directive@Q}"; continue; }
         read -r "${name?}" < <(
           sed -nE '
             /^(export[[:space:]]{1,})?(const|var)[[:space:]]{1,}'"${identifier}"'[[:space:]]*=/{
@@ -165,28 +166,25 @@ function process_directives() {
             $ q1
           ' "${srcdir}/${module}"
         ) || panic 1 'Cannot extract version from identifier %s in module %s' "${identifier@Q}" "${module@Q}"
-        log 'Using version %s from identifier %s in module %s' "${!name@Q}" "${identifier@Q}" "${module@Q}"
+        log '.%Using version %s from identifier %s in module %s' "${!name@Q}" "${identifier@Q}" "${module@Q}"
       };;
       external|closure) { # TODO: directives external, closure
-        log 'Directive %s is not implemented yet' "${directive@Q}"
+        log '.%Directive %s is not implemented yet' "${directive@Q}"
       };;
       *) {
-        log 'Ignore unknown directive %s for module %s' "${directive@Q}" "${module@Q}"
+        log '.%Ignore unknown directive %s for module %s' "${directive@Q}" "${module@Q}"
       }
     esac
   done
   return ${ret}
 }
 
-log_indent=''
-
 function resolve_imports() {
   local tmp tokens module symbols name spec
   # local key
   # key="$( realpath -e --relative-to "${srcdir}" "${PWD}/${1}" )"
 
-  # log '### RESOLVE_IMPORTS pwd:%s 1:%s key:%s' "${PWD@Q}" "${1@Q}" "${key@Q}"
-  log_inc 'Scanning file "%s" for imports ...' "$( realpath -e --relative-to "${srcdir}" "${1}" )"
+  log '>%Scanning file "%s" for imports ...' "$( realpath -e --relative-to "${srcdir}" "${1}" )"
 
   while read -ra tokens; do
     case ${tokens[1]} in
@@ -224,10 +222,8 @@ function resolve_imports() {
         :
       }
     esac
-    # log_inc '>>> %s' "${spec@Q}"
-    # log_dec '<<<'
 
-    log_inc 'Import Module %s (%s) with %d %s: %s' \
+    log '>%Import Module %s (%s) with %d %s: %s' \
       "${module@Q}" \
       "${spec}" \
       "${#symbols[@]}" \
@@ -245,12 +241,12 @@ function resolve_imports() {
         };;
         .*) {
           # TODO: check if module is inside source directory
-          # log_inc ">>>"
+          # log ">%>>>"
           pushd "${srcdir}//${module%/*}" > /dev/null
           feed=1
           (( ${#directives[@]} )) && { process_directives || feed=0; }
           popd > /dev/null
-          # log_dec "<<<"
+          # log "<%<<<"
           name=${tokens[3]}
           local_namespace_imports[${module}]+=" ${name}"
           local_modules["${module}"]=1
@@ -294,10 +290,10 @@ function resolve_imports() {
         };;
       esac
     fi
-    log_dec '.'
+    log '<.'
   done < <( normalize_imports < "${1}" )
 
-  log_dec 'Done'
+  log '<Done'
 }
 
 function print_imports() {
@@ -366,7 +362,7 @@ function feed_foot() {
 
 function feed_module() {
   module="${1}"
-  log "Feed file %s" "${module@Q}"
+  log ".%Feed file %s" "${module@Q}"
   echo
   echo "/** @feed ${module} */"
   sed -nE '
@@ -390,13 +386,12 @@ function feed_module() {
 }
 
 # Entry point
-function main() {
+function main() { { :x:off; } 2>&-
+  { :x:on; } 2>&-; parse_command_line "${@}"
 
-  parse_command_line "${@}"
-
-  echo "srcdir:     ${srcdir}"
-  echo "entrypoint: ${entrypoint}"
-  echo "outfile:    ${outfile}"
+  log . "srcdir:     ${srcdir}"
+  log . "entrypoint: ${entrypoint}"
+  log . "outfile:    ${outfile}"
 
   main_module=${entrypoint#"${srcdir}/"}
   _feeds[:all]="${main_module}"
@@ -406,9 +401,7 @@ function main() {
   resolve_imports "./${entrypoint##*/}"
   { popd; } > /dev/null
 
-  while read -r; do
-    log '%s' "${REPLY}"
-  done < <( print_imports )
+  log - < <( print_imports )
 
   { pushd "${srcdir}"; } > /dev/null
 
@@ -446,39 +439,6 @@ function main() {
   { popd; } > /dev/null
 }
 
-# shellcheck disable=SC2329 # invoked or not
-function :x:on { set -x; }  # Usage: { :x:on; } 2>&-
-# shellcheck disable=SC2329 # invoked or not
-function :x:off { set +x; } # Usage: { :x:off; } 2>&-
-
-# Log a message and increase indentation afterwards.
-function log_inc() { log "${@}"; log_indent+='  '; }
-
-# Decrease indentation beforehand and then log a message.
-function log_dec() { log_indent=${log_indent:0:-2}; log "${@}"; }
-
-# Log a message.
-#
-# Messages beginning with "." are logged without the leading dot.
-# A single "." suppresses output entirely and can be used when only
-# the indentation level should be adjusted by log_inc() or log_dec().
-#
-# Similar to SMTP dot-stuffing, the first dot of a message is removed.
-function log() {
-  [[ ${1} == . ]] && return
-  local format=${1#.}; shift
-  local ms=${EPOCHREALTIME#*.}00
-  # shellcheck disable=SC2059 # the format string is intentionally given as argument
-  printf -v msg "${format}" "${@}"
-  printf '%(%T)T.%s %s%s\n' -1 "${ms:0:3}" "${log_indent}" "${msg}" > /dev/stderr
-}
-
-function panic() {
-  local code=${1}; shift
-  log "${@}"
-  exit "${code}"
-}
-
 # Returns word or words depending on count.
 #
 # Usage:
@@ -514,7 +474,7 @@ function join_tokens() {
   printf "%s${last}%s\n" "${@:(($#-1))}"
 }
 
-function parse_command_line() {
+function parse_command_line() { { :x:off; } 2>&-;
   while (( ${#} )); do
     case "${1}" in
       --) shift; break;;
@@ -566,4 +526,104 @@ function parse_command_line() {
   [[ ${outfile} != ${srcdir}/* || ${outfile} == /dev/stdout ]] || panic 1 'Output file is inside source directory "%s"' "${srcdir}"
 }
 
-main "${@}"; exit
+##### panic() #####
+# Exit the program. The first argument is used as the exit code.
+# Remaining arguments, if any, are passed to log().
+function panic() { { set +x; } 2>&-
+  local code=${1}; shift
+  (( ${#} )) && log '^' "${@}"
+  exit "${code}"
+}
+
+##### log() #####
+# Bash xtrace is temporarily disabled while logging.
+# Indentation modifiers:
+#   .  Print at current indentation level.
+#   >  Print and then increase indentation.
+#   <  Decrease indentation and then print.
+#   ^  Print without indentation.
+#   0  Reset indentation and then print.
+# Message formatting:
+#   The first word is treated as a printf format string only if it
+#   starts with '%'. Otherwise all arguments are treated as literal
+#   words and joined with spaces.
+# Indentation modifiers may be combined with the first word of a message.
+# Similar to SMTP dot-stuffing, the leading dot of a message following
+# an indentation modifier is removed.
+# With '-' as the only argument, lines are read from stdin and printed
+# using the same timestamp, tag, and indentation level.
+# Examples:
+#   log                        # Print only a timestamp.
+#   log . Hello world          # Hello world
+#   log . '%Hello %s' world    # Hello world
+#   log .%%s test              # test
+#   log \>Entering build step
+#   log \<Done
+#   log .             # Print a dot or another single-character message.
+#   log 0 .           # Only adjust indentation.
+#   log . ..          # Adjust indentation and print a dot.
+#   log - < <( < /etc/shadow )
+function log() { { local xtrace=0; [[ ${SHELLOPTS/xtrace/} == "${SHELLOPTS}" ]] || { xtrace=1; set +x; }; } 2>&-
+  local words fmt msg mod ind ms pre; : "${__log_indent:=}"
+  if (( ${#} == 1 )) && [[ ${1} == '-' ]]; then
+    ms=${EPOCHREALTIME#*.}00
+    printf -v pre '%(%T)T.%s [%d/%s] %s' -1 "${ms:0:3}" $$ "${YABUB4JS_LOG_TAG:=${0##*/}}" "${__log_indent}"
+    while read -r; do
+      printf '%s%s\n' "${pre}" "${REPLY}" > /dev/stderr
+    done
+  else
+    if (( ${#} == 0 )); then
+      mod='.'; words=( '' )
+    elif (( ${#1} == 1 )); then
+      if (( ${#} == 1 )); then
+        mod='.'; words=( '%%c' "${1}" )
+      else
+        mod=${1}; words=( "${@:2}" )
+      fi
+    else
+      mod="${1:0:1}"; words=( "${1:1}" "${@:2}" )
+    fi
+    case "${mod}" in
+      '.') ind="${__log_indent}";;
+      '^') ind='';;
+      '>') ind="${__log_indent}"; __log_indent+='  ';;
+      '<') ind=${__log_indent:0:$(( ${#__log_indent} > 1 ? -2 : 0 ))}; __log_indent="${ind}";;
+      '0') ind=''; __log_indent="${ind}";;
+      *) ind=""; words=( '%Invalid invocation: %s %s' "${FUNCNAME[0]}" "${*@Q}" );;
+    esac
+    if (( ${#words[@]} > 1 )) || [[ ${words[0]} != . ]]; then
+      if [[ ${words[0]:0:1} == '%' ]]; then
+        fmt=${words[0]:1}
+        set -- "${words[@]:1}"
+      else
+        fmt='%s'
+        if [[ ${words[0]:0:1} == . ]]; then
+          set -- "${words[0]:1}" "${words[*]:1}"
+        else
+          set -- "${words[*]}"
+        fi
+      fi
+      [[ ${fmt} == . ]] && return || :
+      ms=${EPOCHREALTIME#*.}00
+      # shellcheck disable=SC2059 # the format string is intentionally given as argument
+      printf -v msg -- "${fmt#.}" "${@}"
+      printf '%(%T)T.%s [%d/%s] %s%s\n' -1 "${ms:0:3}" $$ "${YABUB4JS_LOG_TAG:=${0##*/}}" "${ind}" "${msg}" > /dev/stderr
+    fi
+  fi
+  (( xtrace )) && set -x || :
+}
+
+# Tracing levels:
+#   TRACE  - Log script flow and selected operations.
+#   XTRACE - Enable Bash xtrace (set -x).
+# TRACE is enabled by default.
+# Set TRACE and XTRACE to empty strings to suppress all tracing output.
+if [[ -z ${YABUB4JS_TRACE=}${YABUB4JS_XTRACE=} ]]; then
+  function :x:on() { :; }; function :x:off() { :; };
+else
+  # Usage: { :x:on; } 2>&-; { :x:off; } 2>&-
+  function :x:on() { [[ -n ${YABUB4JS_TRACE}${YABUB4JS_XTRACE} ]] && set -x || :; }
+  function :x:off() { [[ -z ${YABUB4JS_XTRACE} || ${1:-} == 'force' ]] && set +x || :; }
+fi
+
+log ^ Started; { :x:on; } 2>&-; main "${@}"; exit
