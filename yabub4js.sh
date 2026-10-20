@@ -236,13 +236,23 @@ function process_directives() { { :x:off; } 2>&-
 }
 
 function resolve_imports() { { :x:off; } 2>&-
-  local tmp tokens module symbols name spec
+  local tmp tokens module symbols name spec directives
   # local key
   # key="$( realpath -e --relative-to "${srcdir}" "${PWD}/${1}" )"
 
   log '>%Scanning file "%s" for imports ...' "$( realpath -e --relative-to "${srcdir}" "${1}" )"
 
   while read -ra tokens; do
+    tmp=${tokens[0]#import}
+    if [[ ${tmp:0:1} == '/' ]]; then
+      tmp="${tmp#'/*'}"
+      tmp="${tmp%'*/'}"
+      tmp=${tmp//&/ }
+      read -ra directives <<<"${tmp#'#'}"
+    else
+      directives=( )
+    fi
+
     case ${tokens[1]} in
       "*") {
         spec=${tokens[5]}
@@ -259,12 +269,8 @@ function resolve_imports() { { :x:off; } 2>&-
 
     spec=${spec#*\'}
     spec=${spec%\'*}
-    tmp=${spec}
     module=${spec%'#'*}
-    tmp=${tmp#"${module}"}
     module=${module%'?'*}
-    tmp=${tmp//&/ }
-    read -ra directives <<<"${tmp#'#'}"
     case "${module}" in
       node:*) {
         :
@@ -361,15 +367,15 @@ function normalize_imports { { :x:off; } 2>^-
       s/'${SEMICOLON}'[[:space:]]*/'${SEMICOLON}'\n/g
       p
     }
-  ' | tee | sed -nE '
-    /^import[[:space:]]*\*[[:space:]]*as[[:space:]]{1,}[^[:space:]]{1,}[[:space:]]{1,}from[[:space:]]{1,}([^'${SEMICOLON}']{3,})'${SEMICOLON}'?[[:space:]]*$/{
+  ' | sed -nE '
+    /^import[[:space:]]*(\/\*[^*]*\*\/)?[[:space:]]*\*[[:space:]]*as[[:space:]]{1,}[^[:space:]]{1,}[[:space:]]{1,}from[[:space:]]{1,}([^'${SEMICOLON}']{3,})'${SEMICOLON}'?[[:space:]]*$/{
       ### s/^[[:space:]]*import[[:space:]]*/\/* namespace *\/ import /
       s/t[[:space:]]*\*[[:space:]]*a/t * a/
       s/[[:space:]](as|from)[[:space:]]/'${SEMICOLON}'\1'${SEMICOLON}'/g
       #s/$/'${SEMICOLON}'/
       p
     }
-    /^import[[:space:]]*\{[[:space:]]*[^'${SEMICOLON}'}]*[[:space:]]*\}[[:space:]]*from[[:space:]]*[^'${SEMICOLON}']*'${SEMICOLON}'?[[:space:]]*$/{
+    /^import[[:space:]]*(\/\*[^*]*\*\/)?[[:space:]]*\{[[:space:]]*[^'${SEMICOLON}'}]*[[:space:]]*\}[[:space:]]*from[[:space:]]*[^'${SEMICOLON}']*'${SEMICOLON}'?[[:space:]]*$/{
       ### s/^[[:space:]]*import[[:space:]]*/\/* single-line-named *\/ import /
       s/\{/{\n/
       s/,/,\n/g
@@ -379,7 +385,7 @@ function normalize_imports { { :x:off; } 2>^-
       s/$/'${SEMICOLON}'/
       p
     }
-    /^import[[:space:]]*\{[^\}]*$/,/^[^{]*\}[[:space:]]*from[[:space:]]*[^'${SEMICOLON}']*'${SEMICOLON}'?[[:space:]]*$/{
+    /^import[[:space:]]*(\/\*[^*]*\*\/)?[[:space:]]*\{[^\}]*$/,/^[^{]*\}[[:space:]]*from[[:space:]]*[^'${SEMICOLON}']*'${SEMICOLON}'?[[:space:]]*$/{
       ### s/^[[:space:]]*import[[:space:]]*/\/* multi-line-named *\/ import /
       /\/\//d # delete line-comments
       s/[[:space:]]{1,}as[[:space:]]{1,}/'${SEMICOLON}'as'${SEMICOLON}'/g # escape spaces around as
@@ -387,16 +393,17 @@ function normalize_imports { { :x:off; } 2>^-
       s/\}[[:space:]]*from[[:space:]]{1,}/}'${SEMICOLON}'from'${SEMICOLON}'/ # escape spaces around from
       p
     }
-  ' | tr -d '[:space:]' | tee | sed -nE '
-    s/(^|'${SEMICOLON}')(\/\*[^*]*\*\/)?(import)/\1\2\3 /g
+  ' | tr -d '[:space:]' | sed -nE '
+    s/(^|'${SEMICOLON}')(\/\*[^*]*\*\/)?(import)([[:space:]]*(\/\*[^*]*\*\/)[[:space:]]*)?/\1\2\3\5 /g
     s/'${SEMICOLON}'(as|from)'${SEMICOLON}'/ \1 /g # restore spaces
     s/\{/{ /g; s/,*\}/ }/g; s/,/, /g # insert spaces
     s/'${SEMICOLON}'{1,}/'${SEMICOLON}'\n/g # separate statements
     p
-  ' | tee
+  '
 }
 
 function print_imports() {
+  local directives modules # TODO: list all local vars
   newblock=0
   modules="${!node_namespace_imports[*]}"
   while read -r module; do
@@ -427,7 +434,7 @@ function print_imports() {
     namespaces="${local_namespace_imports[${module}]}"
     while read -r namespace; do
       [[ -n ${namespace} ]] || continue
-      echo "// import * as ${namespace} from '${module}';"
+      echo "// import${directives+" /*${directives}*/"} * as ${namespace} from '${module}';"
     done <<<"$( IFS=$'\n' sort -u <<<"${namespaces// /$'\n'}" )"
   done <<<"$( IFS=$'\n' sort <<<"${modules// /$'\n'}" )"
 
@@ -439,7 +446,7 @@ function print_imports() {
     symbols2=$( sort -u <<<"${symbols2// /$'\n'}" )
     symbols2=${symbols2//$'\n'/, }
     symbols2=${symbols2//${SEMICOLON}as${SEMICOLON}/ as }
-    echo "// import { ${symbols2:2} } from '${module}';"
+    echo "// import${directives+" /*${directives}*/"} { ${symbols2:2} } from '${module}';"
   done <<<"$( IFS=$'\n' sort <<<"${modules// /$'\n'}" )"
 }
 
