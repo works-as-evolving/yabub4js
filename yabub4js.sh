@@ -95,10 +95,11 @@ function main() { { :x:off; } 2>&-
 
   main_module=${entrypoint#"${srcdir}/"}
   _feeds[:all]="${main_module}"
+  _feeds[:early]=''
   _feeds[${main_module}]=1
 
   { pushd "${entrypoint%/*}"; } > /dev/null
-  resolve_imports "./${entrypoint##*/}"
+  { :x:on; } 2>&-; resolve_imports "./${entrypoint##*/}"
   { popd; } > /dev/null
 
   log - < <( print_imports )
@@ -118,13 +119,13 @@ function main() { { :x:off; } 2>&-
     for feed in ${_feeds[:early]}; do
       (( ${_feeds[${feed}]:-0} )) || continue
       _feeds[${feed}]=0
-      feed_module "${feed}"
+      { :x:on; } 2>&-; feed_module "${feed}"
     done
 
     for feed in ${_feeds[:all]}; do
       (( ${_feeds[${feed}]:-0} )) || continue
       _feeds[${feed}]=0
-      feed_module "${feed}"
+      { :x:on; } 2>&-; feed_module "${feed}"
     done
   } > "${outfile}"
 
@@ -160,7 +161,7 @@ function feed_foot() {
   ' "${file}"
 }
 
-function feed_module() {
+function feed_module() { { :x:off; } 2>&-
   module="${1}"
   log ".%Feed file %s" "${module@Q}"
   echo
@@ -171,7 +172,7 @@ function feed_module() {
   ' "${module}"
   while read -r; do
     echo "// ${REPLY}"
-  done < <( normalize_imports < "${module}" )
+  done < <( { :x:on; } 2>^; normalize_imports "${module}" )
   import_end=0
   while read -r; do
     [[ -n ${REPLY} ]] || continue
@@ -185,7 +186,7 @@ function feed_module() {
   sed -nE $(( import_end + 1 ))',${p}' "${module}"
 }
 
-function process_directives() {
+function process_directives() { { :x:off; } 2>&-
   ret=0
   log '.%Process %d %s: %s' ${#directives[@]} "$( pluralize 'directive' ${#directives[@]} )" "$( join_tokens ', ' ' and ' "${directives[@]@Q}" )"
   for directive in "${directives[@]}"; do
@@ -234,7 +235,7 @@ function process_directives() {
   return ${ret}
 }
 
-function resolve_imports() {
+function resolve_imports() { { :x:off; } 2>&-
   local tmp tokens module symbols name spec
   # local key
   # key="$( realpath -e --relative-to "${srcdir}" "${PWD}/${1}" )"
@@ -299,7 +300,7 @@ function resolve_imports() {
           # log ">%>>>"
           pushd "${srcdir}//${module%/*}" > /dev/null
           feed=1
-          (( ${#directives[@]} )) && { process_directives || feed=0; }
+          (( ${#directives[@]} )) && { { :x:on; } 2>&-; process_directives || feed=0; }
           popd > /dev/null
           # log "<%<<<"
           name=${tokens[3]}
@@ -324,7 +325,7 @@ function resolve_imports() {
         };;
         .*) {
           feed=1
-          (( ${#directives[@]} )) && { process_directives || feed=0; }
+          (( ${#directives[@]} )) && { { :x:on; } 2>&-; process_directives || feed=0; }
           (( ${#symbols[@]} )) || continue; # TODO: WTF?
           # TODO: give foobar a name or get rif of it
           foobar="${local_named_imports[${module}]:-}"
@@ -346,13 +347,13 @@ function resolve_imports() {
       esac
     fi
     log '<.'
-  done < <( normalize_imports < "${1}" )
+  done < <( { :x:on; } 2>^; normalize_imports "${1}" )
 
   log '<Done'
 }
 
-function normalize_imports {
-  sed -nE '
+function normalize_imports { { :x:off; } 2>^-
+  < "${1}" sed -nE '
     /^import/,/from[[:space:]]*["'"'"'][^"'"'"']*["'"'"']/{
       # surround strings with spaces and convert double to single quotes
       s/"([^"]*)"|'"'"'([^'"'"']*)'"'"'/ '"'"'\1\2'"'"' /g
@@ -399,6 +400,7 @@ function print_imports() {
   newblock=0
   modules="${!node_namespace_imports[*]}"
   while read -r module; do
+    [[ -n ${module} ]] || continue
     if [[ -n ${module} ]]; then newblock=1; else continue; fi
     namespaces="${node_namespace_imports[${module}]}"
     while read -r namespace; do
@@ -409,6 +411,7 @@ function print_imports() {
 
   modules="${!node_named_imports[*]}"
   while read -r module; do
+    [[ -n ${module} ]] || continue
     if [[ -n ${module} ]]; then newblock=1; else continue; fi
     symbols2="${node_named_imports[${module}]}"
     symbols2=$( sort -u <<<"${symbols2// /$'\n'}" )
@@ -419,6 +422,7 @@ function print_imports() {
 
   modules="${!local_namespace_imports[*]}"
   while read -r module; do
+    [[ -n ${module} ]] || continue
     (( newblock )) && { newblock=0; echo; }
     namespaces="${local_namespace_imports[${module}]}"
     while read -r namespace; do
@@ -429,6 +433,7 @@ function print_imports() {
 
   modules="${!local_named_imports[*]}"
   while read -r module; do
+    [[ -n ${module} ]] || continue
     (( newblock )) && { newblock=0; echo; }
     symbols2="${local_named_imports[${module}]}"
     symbols2=$( sort -u <<<"${symbols2// /$'\n'}" )
