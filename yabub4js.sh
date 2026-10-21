@@ -66,6 +66,9 @@
 set -euo pipefail
 
 : "${YABUB4JS_LOG_TAG:=yabub4js}"
+: "${YABUB4JS_VAR_BUILD:=$( TZ=Z printf '%(%G%V%u)T.%d' -1 $(( EPOCHSECONDS % 86400)) )}"
+: "${YABUB4JS_VAR_DATE:=$( printf -v s '%(%FT%T%z(%Z))T' -1; s=${s/WEDT/CEST}; printf '%s' "${s}" )}"
+: "${YABUB4JS_VAR_COMMIT:=da39a3ee5e6b4b0d3255bfef95601890afd80709}"
 
 trap "code=\$?; log '^%Exiting with code %d' \${code}; exit \${code}" EXIT
 
@@ -76,13 +79,11 @@ declare -A local_namespace_imports
 declare -A local_modules
 
 SEMICOLON=';'
+PIPE_SYMBOL='|'
 
 _head=''
 _foot=''
 _version=''
-printf -v _date '%(%FT%T%z(%Z))T' -1
-_date=${_date/WEDT/CEST}
-TZ=Z printf -v _build '%(%G%V%u)T.%d' -1 $(( EPOCHSECONDS % 86400))
 _sha1sum='da39a3ee5e6b4b0d3255bfef95601890afd80709'
 declare -A _feeds
 
@@ -102,8 +103,6 @@ function main() { { :x:off; } 2>&-
   { :x:on; } 2>&-; resolve_imports "./${entrypoint##*/}"
   { popd; } > /dev/null
 
-  log - < <( print_imports )
-
   { pushd "${srcdir}"; } > /dev/null
 
   real_outfile="${outfile}"
@@ -112,9 +111,9 @@ function main() { { :x:off; } 2>&-
   fi
 
   {
-    [[ -n ${_head} ]] && feed_head "${_head}"
+    [[ -n ${_head} ]] && { :x:on; } 2>&-; feed_head "${_head}"
 
-    print_imports
+    { :x:on; } 2>&-; print_imports
 
     for feed in ${_feeds[:early]}; do
       (( ${_feeds[${feed}]:-0} )) || continue
@@ -131,28 +130,32 @@ function main() { { :x:off; } 2>&-
 
   if [[ ${real_outfile} != "${outfile}" ]]; then
     if [[ -n ${_foot} ]]; then
-      read -r _sha1sum _ < <( sed -E 's/\r$//' < "${outfile}" | sha1sum.exe )
-      feed_foot "${_foot}" >> "${outfile}"
+      read -r _sha1sum _ < <( sed -E 's/\r$//' < "${outfile}" | sha1sum )
+      { :x:on; } 2>&-; feed_foot "${_foot}" >> "${outfile}"
     fi
     mv "${outfile}" "${real_outfile}"
+  else
+    feed_foot "${_foot}" >> "${outfile}"
   fi
 
   { popd; } > /dev/null
 }
 
-function feed_head() {
+function feed_head() { { :x:off; } 2>&-
+  log '.%Feed head %s' "${1@Q}"
   file="${1}"
   sed -E '
     /\/\*\*/,/\*\//{
       s/\{:VERSION:\}/'"${_version}"'/
-      s/\{:BUILD:\}/'"${_build}"'/
-      s/\{:DATE:\}/'"${_date}"'/
-      s/\{:COMMIT:\}/da39a3ee5e6b4b0d3255bfef95601890afd80709/
+      s/\{:BUILD:\}/'"${YABUB4JS_VAR_BUILD}"'/
+      s/\{:DATE:\}/'"${YABUB4JS_VAR_DATE}"'/
+      s/\{:COMMIT:\}/'"${YABUB4JS_VAR_COMMIT}"'/
     }
   ' "${file}"
 }
 
-function feed_foot() {
+function feed_foot() { { :x:off; } 2>&-
+  log '.%Feed foot %s' "${1@Q}"
   file="${1}"
   sed -E '
     /\/\*\*/,/\*\//{
@@ -170,9 +173,9 @@ function feed_module() { { :x:off; } 2>&-
     /\/\*\*/,/\*\//{p}
     /\*\//{q0}
   ' "${module}"
-  while read -r; do
-    echo "// ${REPLY}"
-  done < <( { :x:on; } 2>^; normalize_imports "${module}" )
+
+  { :x:on; } 2>&-; normalize_imports "${module}" '//'
+
   import_end=0
   while read -r; do
     [[ -n ${REPLY} ]] || continue
@@ -188,30 +191,30 @@ function feed_module() { { :x:off; } 2>&-
 
 function process_directives() { { :x:off; } 2>&-
   ret=0
-  log '.%Process %d %s: %s' ${#directives[@]} "$( pluralize 'directive' ${#directives[@]} )" "$( join_tokens ', ' ' and ' "${directives[@]@Q}" )"
+  log '.%Process %d %s%s' ${#directives[@]} "$( pluralize 'directive' ${#directives[@]} )" "$( join_tokens ': ' ', ' ' and ' '' "${directives[@]@Q}" )"
   for directive in "${directives[@]}"; do
     case "${directive}" in
-      head|foot) {
+      @head|@foot) {
         ret=1
-        name=_${directive}
+        name=_${directive#@}
         [[ -z "${!name}" ]] || { log '.%Ignore repeated %s directive' "${directive@Q}"; continue; }
         declare -g "${name}"="$( realpath -e --relative-to "${srcdir}" "${module##*/}" )"
         log '.%Using %s from %s' "${directive@Q}" "${!name@Q}"
       };;
-      early) {
+      @early) {
         log '.%Add module %s to early feeds' "${module@Q}"
         _feeds[:early]+=" ${module}"
         :
       };;
-      version|version=*) {
-        if [[ ${directive} == 'version' ]]; then
+      @version|@version=*) {
+        if [[ ${directive} == '@version' ]]; then
           identifier=${symbols[0]}
           identifier=${identifier%"${SEMICOLON}as${SEMICOLON}"*}
         else
           identifier=${directive#*=}
           directive=${directive%%=*}
         fi
-        name=_${directive}
+        name=_${directive#@}
         [[ -z "${!name}" ]] || { log '.%Ignore repeated %s directive' "${directive@Q}"; continue; }
         read -r "${name?}" < <(
           sed -nE '
@@ -224,7 +227,7 @@ function process_directives() { { :x:off; } 2>&-
         ) || panic 1 'Cannot extract version from identifier %s in module %s' "${identifier@Q}" "${module@Q}"
         log '.%Using version %s from identifier %s in module %s' "${!name@Q}" "${identifier@Q}" "${module@Q}"
       };;
-      external|closure) { # TODO: directives external, closure
+      @external|@closure) { # TODO: directives external, closure
         log '.%Directive %s is not implemented yet' "${directive@Q}"
       };;
       *) {
@@ -244,11 +247,10 @@ function resolve_imports() { { :x:off; } 2>&-
 
   while read -ra tokens; do
     tmp=${tokens[0]#import}
-    if [[ ${tmp:0:1} == '/' ]]; then
-      tmp="${tmp#'/*'}"
+    if [[ ${tmp} == '/**'* ]]; then
+      tmp="${tmp#'/**'}"
       tmp="${tmp%'*/'}"
-      tmp=${tmp//&/ }
-      read -ra directives <<<"${tmp#'#'}"
+      IFS="${PIPE_SYMBOL}" read -ra directives <<<"${tmp}"
     else
       directives=( )
     fi
@@ -285,12 +287,12 @@ function resolve_imports() { { :x:off; } 2>&-
       }
     esac
 
-    log '>%Import Module %s (%s) with %d %s: %s' \
+    log '>%Import Module %s (%s) with %d %s%s' \
       "${module@Q}" \
       "${spec}" \
       "${#symbols[@]}" \
       "$( pluralize 'symbol' ${#symbols[@]} )" \
-      "$( join_tokens ', ' ' and ' "${symbols[@]@Q}" )"
+      "$( join_tokens ' (' ', ' ' and ' ')' "${symbols[@]@Q}" )"
 
     if [[ ${tokens[1]} == '*' ]]; then
       case ${spec} in
@@ -353,30 +355,32 @@ function resolve_imports() { { :x:off; } 2>&-
       esac
     fi
     log '<.'
-  done < <( { :x:on; } 2>^; normalize_imports "${1}" )
+  done < <( { :x:on; } 2>&-; normalize_imports "${1}" )
 
   log '<Done'
 }
 
-function normalize_imports { { :x:off; } 2>^-
+function normalize_imports { { :x:off; } 2>&-
+  local line_prefix=''
+  [[ ${2:-} == '//' ]] && line_prefix='\/\/ ' || :
   < "${1}" sed -nE '
+    # surround strings with spaces and convert double to single quotes
     /^import/,/from[[:space:]]*["'"'"'][^"'"'"']*["'"'"']/{
-      # surround strings with spaces and convert double to single quotes
       s/"([^"]*)"|'"'"'([^'"'"']*)'"'"'/ '"'"'\1\2'"'"' /g
       # split multi-statement lines
       s/'${SEMICOLON}'[[:space:]]*/'${SEMICOLON}'\n/g
       p
     }
   ' | sed -nE '
-    /^import[[:space:]]*(\/\*[^*]*\*\/)?[[:space:]]*\*[[:space:]]*as[[:space:]]{1,}[^[:space:]]{1,}[[:space:]]{1,}from[[:space:]]{1,}([^'${SEMICOLON}']{3,})'${SEMICOLON}'?[[:space:]]*$/{
-      ### s/^[[:space:]]*import[[:space:]]*/\/* namespace *\/ import /
+    # namespace import
+    /^[[:space:]]*import[[:space:]]*(\/\*\*[^*]*\*\/)?[[:space:]]*\*[[:space:]]*as[[:space:]]{1,}[^[:space:]]{1,}[[:space:]]{1,}from[[:space:]]{1,}([^'${SEMICOLON}']{3,})'${SEMICOLON}'?[[:space:]]*$/{
       s/t[[:space:]]*\*[[:space:]]*a/t * a/
       s/[[:space:]](as|from)[[:space:]]/'${SEMICOLON}'\1'${SEMICOLON}'/g
       #s/$/'${SEMICOLON}'/
       p
     }
-    /^import[[:space:]]*(\/\*[^*]*\*\/)?[[:space:]]*\{[[:space:]]*[^'${SEMICOLON}'}]*[[:space:]]*\}[[:space:]]*from[[:space:]]*[^'${SEMICOLON}']*'${SEMICOLON}'?[[:space:]]*$/{
-      ### s/^[[:space:]]*import[[:space:]]*/\/* single-line-named *\/ import /
+    # single-line named import
+    /^[[:space:]]*import[[:space:]]*(\/\*\*[^*]*\*\/)?[[:space:]]*\{[[:space:]]*[^'${SEMICOLON}'}]*[[:space:]]*\}[[:space:]]*from[[:space:]]*[^'${SEMICOLON}']*'${SEMICOLON}'?[[:space:]]*$/{
       s/\{/{\n/
       s/,/,\n/g
       s/\}/,\n}/
@@ -385,8 +389,8 @@ function normalize_imports { { :x:off; } 2>^-
       s/$/'${SEMICOLON}'/
       p
     }
-    /^import[[:space:]]*(\/\*[^*]*\*\/)?[[:space:]]*\{[^\}]*$/,/^[^{]*\}[[:space:]]*from[[:space:]]*[^'${SEMICOLON}']*'${SEMICOLON}'?[[:space:]]*$/{
-      ### s/^[[:space:]]*import[[:space:]]*/\/* multi-line-named *\/ import /
+    # multi-line named import
+    /^[[:space:]]*import[[:space:]]*(\/\*\*[^*]*\*\/)?[[:space:]]*\{[^\}]*$/,/^[^{]*\}[[:space:]]*from[[:space:]]*[^'${SEMICOLON}']*'${SEMICOLON}'?[[:space:]]*$/{
       /\/\//d # delete line-comments
       s/[[:space:]]{1,}as[[:space:]]{1,}/'${SEMICOLON}'as'${SEMICOLON}'/g # escape spaces around as
       s/(from[^{}]*)$/\1'${SEMICOLON}'/ # append semicolon
@@ -394,7 +398,8 @@ function normalize_imports { { :x:off; } 2>^-
       p
     }
   ' | tr -d '[:space:]' | sed -nE '
-    s/(^|'${SEMICOLON}')(\/\*[^*]*\*\/)?(import)([[:space:]]*(\/\*[^*]*\*\/)[[:space:]]*)?/\1\2\3\5 /g
+    s/(^|'${SEMICOLON}')(import)(\/\*\*[^*]*\*\/)?/\1'"${line_prefix}"'\2\3 /g
+    s/(^|'${SEMICOLON}')(\/\/ import)(\/\*\*)([^\*]*)(\*\/)/\1\2 \3 \4 \5/g
     s/'${SEMICOLON}'(as|from)'${SEMICOLON}'/ \1 /g # restore spaces
     s/\{/{ /g; s/,*\}/ }/g; s/,/, /g # insert spaces
     s/'${SEMICOLON}'{1,}/'${SEMICOLON}'\n/g # separate statements
@@ -402,7 +407,7 @@ function normalize_imports { { :x:off; } 2>^-
   '
 }
 
-function print_imports() {
+function print_imports() { { :x:off; } 2>&-
   local directives modules # TODO: list all local vars
   newblock=0
   modules="${!node_namespace_imports[*]}"
@@ -414,7 +419,7 @@ function print_imports() {
       [[ -n ${namespace} ]] || continue
       echo "import * as ${namespace} from '${module}';"
     done <<<"$( IFS=$'\n' sort -u <<<"${namespaces// /$'\n'}" )"
-  done <<<"$( IFS=$'\n' sort <<<"${modules// /$'\n'}" )"
+  done <<<"${modules// /$'\n'}"
 
   modules="${!node_named_imports[*]}"
   while read -r module; do
@@ -425,7 +430,7 @@ function print_imports() {
     symbols2=${symbols2//$'\n'/, }
     symbols2=${symbols2//${SEMICOLON}as${SEMICOLON}/ as }
     echo "import { ${symbols2:2} } from '${module}';"
-  done <<<"$( IFS=$'\n' sort <<<"${modules// /$'\n'}" )"
+  done <<<"${modules// /$'\n'}"
 
   modules="${!local_namespace_imports[*]}"
   while read -r module; do
@@ -436,7 +441,7 @@ function print_imports() {
       [[ -n ${namespace} ]] || continue
       echo "// import${directives+" /*${directives}*/"} * as ${namespace} from '${module}';"
     done <<<"$( IFS=$'\n' sort -u <<<"${namespaces// /$'\n'}" )"
-  done <<<"$( IFS=$'\n' sort <<<"${modules// /$'\n'}" )"
+  done <<<"${modules// /$'\n'}"
 
   modules="${!local_named_imports[*]}"
   while read -r module; do
@@ -447,7 +452,7 @@ function print_imports() {
     symbols2=${symbols2//$'\n'/, }
     symbols2=${symbols2//${SEMICOLON}as${SEMICOLON}/ as }
     echo "// import${directives+" /*${directives}*/"} { ${symbols2:2} } from '${module}';"
-  done <<<"$( IFS=$'\n' sort <<<"${modules// /$'\n'}" )"
+  done <<<"${modules// /$'\n'}"
 }
 
 function parse_command_line() { { :x:off; } 2>&-;
@@ -520,23 +525,23 @@ function pluralize() {
 # Joins tokens using separate delimiters for intermediate and final items.
 #
 # Usage:
-#   join_tokens ', ' ' and ' a            -> a
-#   join_tokens ', ' ' and ' a b          -> a and b
-#   join_tokens ', ' ' and ' a b c        -> a, b and c
-#   join_tokens ', ' ', and ' a b c d     -> a, b, c, and d
+#   join_tokens '' ', ' ' and ' a ''          -> a
+#   join_tokens '' ', ' ' and ' a b ''        -> a and b
+#   join_tokens '' ', ' ' and ' a b c ''      -> a, b and c
+#   join_tokens '(' ', ' ', and ' a b c d ')' -> (a, b, c, and d)
 #
 # Parameters:
 #   $1  Separator between all but the last two tokens.
 #   $2  Separator between the last two tokens.
 #   $@  Tokens to join.
 function join_tokens() {
-  local sep="${1}"; shift
-  local last="${1}"; shift
+  local before="${1}" sep="${2}" last="${3:-${2}}" after="${4}"
+  shift 4
   (( $# == 0 )) && printf '' && return
-  (( $# == 1 )) && printf '%s' "${@:1}" && return
-  (( $# > 2 )) && printf "%s${sep}" "${@:1:(($#-2))}"
-  printf "%s${last}%s\n" "${@:(($#-1))}"
+  (( $# == 1 )) && printf '%s%s%s' "${before}" "${@:1}" "${after}" && return
+  printf "%s%s%s${last}%s%s" "${before}" "$( (( $# > 2 )) && printf "%s${sep}" "${@:1:(($#-2))}" )" "${@:(($#-1))}" "${after}"
 }
+
 ##### panic() #####
 # Exit the program. The first argument is used as the exit code.
 # Remaining arguments, if any, are passed to log().
