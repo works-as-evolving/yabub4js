@@ -3,6 +3,8 @@
 YABUB4JS is a small, almost dependency-free JavaScript bundler written in
 Bash.
 
+[[ GitHub Repository ]](https://github.com/works-as-evolving/yabub4js)
+
 Unlike most JavaScript bundlers, YABUB4JS does not transpile, optimize,
 minify, obfuscate, isolate, or hide implementation details. Instead, it
 **feeds** multiple source files into a single readable and debuggable
@@ -46,14 +48,14 @@ original modules.
 ## Usage
 
 ```sh
-curl -sf https://works-as-evolving.github.io/yabub4js/yabub4js.sh \
+curl -sf https://works-as-evolving.github.io/yabub4js/bin/yabub4js.sh \
   | bash -s <srcdir> <entrypoint> <outfile>
 ```
 
 Example:
 
 ```sh
-curl -sf https://works-as-evolving.github.io/yabub4js/yabub4js.sh \
+curl -sf https://works-as-evolving.github.io/yabub4js/bin/yabub4js.sh \
   | bash -s ./src svc/dt42-svc.mjs ./dist/dt42-svc.mjs
 ```
 
