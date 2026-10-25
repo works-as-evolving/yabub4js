@@ -124,6 +124,13 @@ function main() { { :x:off; } 2>&-
     for feed in ${_feeds[:all]}; do
       (( ${_feeds[${feed}]:-0} )) || continue
       _feeds[${feed}]=0
+      { :x:on; } 2>&-; feed_module "${feed}" '@entrypoint'
+      break
+    done
+
+    for feed in ${_feeds[:all]}; do
+      (( ${_feeds[${feed}]:-0} )) || continue
+      _feeds[${feed}]=0
       { :x:on; } 2>&-; feed_module "${feed}"
     done
   } > "${outfile}"
@@ -168,7 +175,7 @@ function feed_module() { { :x:off; } 2>&-
   module="${1}"
   log ".%Feed file %s" "${module@Q}"
   echo
-  echo "/** @feed ${module} */"
+  echo "/** ${2:+${2} }@feed ${module} */"
   sed -nE '
     /\/\*\*/,/\*\//{p}
     /\*\//{q0}
